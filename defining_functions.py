@@ -12,6 +12,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import RobustScaler, StandardScaler, MinMaxScaler
 from scipy.stats import chi2
 from sklearn.model_selection import cross_val_score, cross_validate
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import (confusion_matrix, 
                              classification_report,
                              accuracy_score,
@@ -26,6 +27,8 @@ import time
 def eda(dataset: pd.DataFrame, 
         bin_size: int or list = None, 
         graphs: bool = False,
+        hue: str = None,
+        markers: list = None,
         only_graphs: bool = False,
         hist_figsize: tuple = (15, 10),
         corr_heatmap_figsize: tuple = (15, 10),
@@ -45,7 +48,9 @@ def eda(dataset: pd.DataFrame,
         data_correlation_matrix = dataset.corr(numeric_only = True)
         data_distinct_count = dataset.nunique()
         data_count_duplicates = dataset.duplicated().sum()
+        data_duplicates = dataset[dataset.duplicated()]
         data_count_null = dataset.isnull().sum()
+        # data_null = dataset[any(dataset.isna())]
         data_total_null = dataset.isnull().sum().sum()
         for each_column in dataset.columns: # Loop through each column and get the unique values
             data_unique[each_column] = dataset[each_column].unique()
@@ -69,7 +74,7 @@ def eda(dataset: pd.DataFrame,
         
         # Creating the pairplot for the dataset
         plt.figure(figsize = pairplot_figsize)
-        sns.pairplot(dataset) # Graph of correlation across each numerical feature
+        sns.pairplot(dataset, hue = hue, markers = markers) # Graph of correlation across each numerical feature
         plt.show()
     
     if only_graphs != True:
@@ -84,6 +89,8 @@ def eda(dataset: pd.DataFrame,
                   "data_count_null": data_count_null,
                   "data_total_null": data_total_null,
                   "data_unique": data_unique,
+                  "data_duplicates": data_duplicates,
+                  # "data_null": data_null,
                   "data_category_count": data_category_count,
                   "data_numeric_count": data_numeric_count,
                   }
@@ -528,7 +535,8 @@ def build_classifier_model(classifier,
                            y_train: pd.DataFrame, 
                            x_test: pd.DataFrame, 
                            y_test: pd.DataFrame, 
-                           kfold: int = 10) -> dict:
+                           kfold: int = 10,
+                           pos_label: int = 1) -> dict:
     # Model Training
     model = classifier.fit(x_train, y_train)
     
@@ -541,17 +549,17 @@ def build_classifier_model(classifier,
     training_analysis = confusion_matrix(y_train, y_pred)
     training_class_report = classification_report(y_train, y_pred)
     training_accuracy = accuracy_score(y_train, y_pred)
-    training_precision = precision_score(y_train, y_pred, average='weighted')
-    training_recall = recall_score(y_train, y_pred, average='weighted')
-    training_f1_score = f1_score(y_train, y_pred, average='weighted')
+    training_precision = precision_score(y_train, y_pred, average='weighted', pos_label = pos_label)
+    training_recall = recall_score(y_train, y_pred, average='weighted', pos_label = pos_label)
+    training_f1_score = f1_score(y_train, y_pred, average='weighted', pos_label = pos_label)
     
     # Test Evaluations: Check Model Predictive Capacity
     test_analysis = confusion_matrix(y_test, y_pred1)
     test_class_report = classification_report(y_test, y_pred1)
     test_accuracy = accuracy_score(y_test, y_pred1)
-    test_precision = precision_score(y_test, y_pred1, average='weighted')
-    test_recall = recall_score(y_test, y_pred1, average='weighted')
-    test_f1_score = f1_score(y_test, y_pred1, average='weighted')
+    test_precision = precision_score(y_test, y_pred1, average='weighted', pos_label = pos_label)
+    test_recall = recall_score(y_test, y_pred1, average='weighted', pos_label = pos_label)
+    test_f1_score = f1_score(y_test, y_pred1, average='weighted', pos_label = pos_label)
     
     # Validation of Predictions
     cross_val = cross_val_score(model, x_train, y_train, cv = kfold)  
@@ -598,7 +606,8 @@ def build_multiple_classifiers(classifiers: Union[list or tuple],
                                y_train: pd.DataFrame, 
                                x_test: pd.DataFrame, 
                                y_test: pd.DataFrame, 
-                               kfold: int = 10) -> tuple:
+                               kfold: int = 10,
+                               pos_label: int = 1) -> tuple:
     multiple_classifier_models = {} # General store for all metrics from each algorithm
     store_algorithm_metrics = [] # Store all metrics gotten from the algorithm at each iteration in the loop below
     dataframe = pd.DataFrame(columns = ["Algorithm",
@@ -619,7 +628,8 @@ def build_multiple_classifiers(classifiers: Union[list or tuple],
                                                                                                 y_train = y_train, 
                                                                                                 x_test = x_test, 
                                                                                                 y_test = y_test, 
-                                                                                                kfold = kfold)
+                                                                                                kfold = kfold,
+                                                                                                pos_label = pos_label)
         # Collecting individual metric to build algorithm dataframe
         training_accuracy = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Training Evaluation"]["Model Accuracy"]
         training_precision = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Training Evaluation"]["Model Precision"]
@@ -712,6 +722,24 @@ def save_dataframe(dataset: pd.DataFrame, name: str):
         print("\nSuccessfully saved file to the specified folder ---> generated_data folder.")
     except FileNotFoundError:
         print("\nFailed to save file to the specified folder ---> generated_data folder.")
-        
 
+
+def create_group_clustering(dataset: pd.DataFrame,
+                            columns: list,
+                            n_clusters: int,
+                            linkage: str):
     
+    clusterer = AgglomerativeClustering(linkage = linkage, n_clusters = n_clusters)
+    return clusterer.fit(dataset[columns]).labels_
+
+
+def agg_two_groups(df: pd.DataFrame,
+                  columns: list,
+                  groupby: str,
+                  agg_fun: dict):
+    
+    dataset = df[columns].groupby(groupby).agg(agg_fun).reset_index()
+    mapping = {key: value for key, value in zip(dataset[columns[0]], dataset[columns[1]])}
+    return mapping
+
+
