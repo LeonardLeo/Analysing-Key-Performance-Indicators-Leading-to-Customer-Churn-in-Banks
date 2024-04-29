@@ -26,7 +26,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.feature_selection import f_classif, chi2, SelectFpr
 from ydata_profiling import ProfileReport
-from imblearn.over_sampling import RandomOverSampler, SMOTE
+from imblearn.over_sampling import SMOTE, ADASYN
 from defining_functions import (eda,
                                 check_outliers,
                                 build_multiple_classifiers,
@@ -218,11 +218,11 @@ X_train, X_test, y_train, y_test = train_test_split(new_X, y,
 
 # Resampling minority class
 # ---> Resampling the training data seperately
-resampler_train = SMOTE()
+resampler_train = ADASYN(random_state = 0)
 X_train, y_train = resampler_train.fit_resample(X_train, y_train)
 
 # ---> Resampling the test data seperately
-resampler_test = SMOTE()
+resampler_test = ADASYN(random_state = 0)
 X_test, y_test = resampler_test.fit_resample(X_test, y_test)
 
 # Final EDA - Training data 
@@ -267,13 +267,13 @@ classifiers = [
                 classifier3,
                 classifier4,
                 classifier5,
-                classifier6,
+                # classifier6,
                 classifier7,
                 classifier8,
-                classifier9,
-                # classifier10,
-                classifier11,
-                classifier12
+                # classifier9,
+                # # classifier10,
+                # classifier11,
+                # classifier12
                 ]
 
 
