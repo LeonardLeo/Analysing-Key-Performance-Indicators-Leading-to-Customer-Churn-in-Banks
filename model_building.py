@@ -203,15 +203,16 @@ classifier12 = BaggingClassifier(estimator = classifier9)
 
 
 
-c = classifier(train_classifier = classifier8,
-               retrain_classifier = classifier1,
+c = classifier(train_classifier = classifier2,
+               retrain_classifier = classifier4,
                 X_train = X_resampled,
                 y_train = y_resampled,
                 X_test = X_test,
                 y_test = y_test,
                 fp_and_fn = True, 
                 probabilities = True,
-                probability_threshold = 0.3)
+                probability_threshold = 0.3,
+                retrain_prob_thresh = 0.6)
 
 
 
