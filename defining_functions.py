@@ -11,15 +11,17 @@ import seaborn as sns
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import RobustScaler, StandardScaler, MinMaxScaler
 from scipy.stats import chi2
-from sklearn.model_selection import cross_val_score, cross_validate
-from sklearn.cluster import AgglomerativeClustering
+from sklearn.model_selection import (cross_val_score,
+                                     cross_validate,
+                                     RepeatedStratifiedKFold)
 from sklearn.metrics import (confusion_matrix,
                              classification_report,
                              accuracy_score,
                              precision_score,
                              recall_score,
                              f1_score)
-from typing import Union
+from imblearn.base import BaseSampler
+from typing import Union, Callable, List, Tuple, Dict, Optional
 import joblib
 import time
 
@@ -533,23 +535,24 @@ def cummulative_frequency(column: pd.Series,
 
 
 def build_classifier_model(classifier,
-                           X_train: pd.DataFrame,
-                           y_train: pd.DataFrame,
-                           X_test: pd.DataFrame,
-                           y_test: pd.DataFrame,
-                           cross_validate_Xtrain: pd.DataFrame = None,
-                           cross_validate_ytrain: pd.DataFrame = None,
-                           kfold: int = 10,
-                           pos_label: int = 1,
-                           scoring_cross_validate: str or callable or list or tuple or dict = None,
-                           scoring_cross_val_score: str or callable = None,
-                           n_jobs: int = 1,
-                           return_estimator: bool = True,
-                           return_train_score: bool = True,
-                           fp_and_fn: bool = False,
-                           sample_weights: dict = None,
-                           probabilities: bool = False,
-                           probability_threshold: float = 0.3) -> dict:
+                            X_train: pd.DataFrame,
+                            y_train: pd.DataFrame,
+                            X_test: pd.DataFrame,
+                            y_test: pd.DataFrame,
+                            X_val: pd.DataFrame,
+                            y_val: pd.DataFrame,
+                            cross_validate_Xtrain: Optional[pd.DataFrame],
+                            cross_validate_ytrain: Optional[pd.DataFrame],
+                            repeatedstratifiedkfold: int = 10,
+                            repeatedstratifiedresampler: Optional[BaseSampler] = None,
+                            n_repeats_stratified: int = 1,
+                            scoring_cross_validate: Union[str, Callable, List[str], Tuple[str], Dict[str, str]] = None,
+                            scoring_cross_val_score: Union[str, Callable] = None,
+                            n_jobs: int = -1,
+                            return_estimator: bool = True,
+                            return_train_score: bool = True,
+                            sample_weights: Optional[Dict] = None,
+                            cv_random_state: int = None) -> dict:
 
     # Model Training
     if (sample_weights is not None):
@@ -561,281 +564,224 @@ def build_classifier_model(classifier,
     # Model Prediction
     y_pred = model.predict(X_train) # Training Predictions: Check OverFitting
     y_pred1 = model.predict(X_test) # Test Predictions: Check Model Predictive Capacity
+    y_pred2 = model.predict(X_val) # Validation Predictions: For retraining the model
 
     # Predicting Probablities
     if hasattr(classifier, 'predict_proba') == True:
         y_pred_proba = model.predict_proba(X_train)
         y_pred1_proba = model.predict_proba(X_test)
+        y_pred2_proba = model.predict_proba(X_val)
 
     # Model Evalustion and Validation
     # Training Evaluation: Check OverFitting
     training_analysis = confusion_matrix(y_train, y_pred)
     training_class_report = classification_report(y_train, y_pred)
     training_accuracy = accuracy_score(y_train, y_pred)
-    training_precision = precision_score(y_train, y_pred, average='weighted', pos_label = pos_label)
-    training_recall = recall_score(y_train, y_pred, average='weighted', pos_label = pos_label)
-    training_f1_score = f1_score(y_train, y_pred, average='weighted', pos_label = pos_label)
+    training_precision = precision_score(y_train, y_pred, average='weighted')
+    training_recall = recall_score(y_train, y_pred, average='weighted')
+    training_f1_score = f1_score(y_train, y_pred, average='weighted')
+    training_tpr = training_analysis[1, 1] / np.sum(training_analysis[1, :])
+    training_tnr = training_analysis[0, 0] / np.sum(training_analysis[0, :])
+    training_precision_1 = training_analysis[1, 1] / np.sum(training_analysis[:, 1])
+    training_precision_0 = training_analysis[0, 0] / np.sum(training_analysis[:, 0])
 
     # Test Evaluations: Check Model Predictive Capacity
     test_analysis = confusion_matrix(y_test, y_pred1)
     test_class_report = classification_report(y_test, y_pred1)
     test_accuracy = accuracy_score(y_test, y_pred1)
-    test_precision = precision_score(y_test, y_pred1, average='weighted', pos_label = pos_label)
-    test_recall = recall_score(y_test, y_pred1, average='weighted', pos_label = pos_label)
-    test_f1_score = f1_score(y_test, y_pred1, average='weighted', pos_label = pos_label)
+    test_precision = precision_score(y_test, y_pred1, average='weighted')
+    test_recall = recall_score(y_test, y_pred1, average='weighted')
+    test_f1_score = f1_score(y_test, y_pred1, average='weighted')
+    test_tpr = test_analysis[1, 1] / np.sum(test_analysis[1, :])
+    test_tnr = test_analysis[0, 0] / np.sum(test_analysis[0, :])
+    test_precision_1 = test_analysis[1, 1] / np.sum(test_analysis[:, 1])
+    test_precision_0 = test_analysis[0, 0] / np.sum(test_analysis[:, 0])
 
-    # Comparing false positives and false negatives for training and test data
-    if fp_and_fn == True:
-        store_data = {}
-        data_Xtrain = X_train
-        data_Xtest = X_test
-        data_ytrain = y_train
-        data_ytest = y_test
-        data_ypred = y_pred
-        data_ypred1 = y_pred1
-
-        # Converting all to numpy for faster computations
-        if isinstance(data_Xtrain, pd.DataFrame):
-            data_Xtrain = data_Xtrain.to_numpy()
-        if isinstance(data_Xtest, pd.DataFrame):
-            data_Xtest = data_Xtest.to_numpy()
-        if isinstance(data_ytrain, pd.Series):
-            data_ytrain = data_ytrain.values
-        if isinstance(data_ytest, pd.Series):
-            data_ytest = data_ytest.values
-        if isinstance(data_ypred, pd.Series):
-            data_ypred = data_ypred.values
-        if isinstance(data_ypred1, pd.Series):
-            data_ypred1 = data_ypred1.values
-
-        check_class_count = len(np.unique(data_ytrain))
-
-        # Adding the predicted values and actual values to data_Xtrain and data_Xtest
-        if hasattr(classifier, 'predict_proba') == True:
-            data_Xtrain = np.hstack((data_Xtrain, y_pred_proba))
-            data_Xtest = np.hstack((data_Xtest, y_pred1_proba))
-        data_Xtrain = np.hstack((data_Xtrain, data_ytrain.reshape(-1, 1), data_ypred.reshape(-1, 1)))
-        data_Xtest = np.hstack((data_Xtest, data_ytest.reshape(-1, 1), data_ypred1.reshape(-1, 1)))
-
-        # Check if it is a binanry classification problem
-        if check_class_count == 2:
-            # --- Training Data
-            train_fp = data_Xtrain[(data_Xtrain[:, -2] == 0) & (data_Xtrain[:, -1] == 1)]
-            train_fn = data_Xtrain[(data_Xtrain[:, -2] == 1) & (data_Xtrain[:, -1] == 0)]
-
-            # --- Test Data
-            test_fp = data_Xtest[(data_Xtest[:, -2] == 0) & (data_Xtest[:, -1] == 1)]
-            test_fn = data_Xtest[(data_Xtest[:, -2] == 1) & (data_Xtest[:, -1] == 0)]
-
-            # --- Combined Data
-            new_data_train = np.vstack((train_fp, train_fn))
-            new_data_test = np.vstack((test_fp, test_fn))
-
-            # Store the data
-            store_data["Training FP and FN"] = {"False Positives": train_fp, "False Negatives": train_fn}
-            store_data["Test FP and FN"] = {"False Positives": test_fp, "False Negatives": test_fn}
-            store_data["ReTraining Data"] = new_data_train
-            store_data["ReTesting Data"] = new_data_test
-            store_data["X_train"] = data_Xtrain
-
-        # Check if it is a multi-classification problem
-        elif check_class_count > 2:
-            get_unique = np.unique(data_ytrain)
-            for value in get_unique:
-                for each_value in get_unique:
-                    if value != each_value:
-                        # --- Training Data
-                        train_fp = data_Xtrain[(data_Xtrain[:, -2] == value) & (data_Xtrain[:, -1] == each_value)]
-
-                        # --- Test Data
-                        test_fp = data_Xtest[(data_Xtest[:, -2] == value) & (data_Xtest[:, -1] == each_value)]
-
-                        # Store the data
-                        store_data[f"Class {value} | Class {each_value}"] = {"Training False Predictions": train_fp, "Test False Predictions": test_fp}
-
-
-    # Getting probablities below a certain threshold for training and test data
-    if probabilities == True:
-        store_data_proba = {}
-        data_Xtrain_proba = X_train
-        data_Xtest_proba = X_test
-        data_ytrain_proba = y_train
-        data_ytest_proba = y_test
-        data_ypred_proba = y_pred
-        data_ypred1_proba = y_pred1
-
-        # Converting all to numpy for faster computations
-        if isinstance(data_Xtrain_proba, pd.DataFrame):
-            data_Xtrain_proba = data_Xtrain_proba.to_numpy()
-        if isinstance(data_Xtest_proba, pd.DataFrame):
-            data_Xtest_proba = data_Xtest_proba.to_numpy()
-        if isinstance(data_ytrain_proba, pd.Series):
-            data_ytrain_proba = data_ytrain_proba.values
-        if isinstance(data_ytest_proba, pd.Series):
-            data_ytest_proba = data_ytest_proba.values
-        if isinstance(data_ypred_proba, pd.Series):
-            data_ypred_proba = data_ypred_proba.values
-        if isinstance(data_ypred1_proba, pd.Series):
-            data_ypred1_proba = data_ypred1_proba.values
-
-        check_class_count = len(np.unique(data_ytrain_proba))
-
-        # Adding the predicted values and actual values to data_Xtrain and data_Xtest
-        if hasattr(classifier, 'predict_proba') == True:
-            data_Xtrain_proba = np.hstack((data_Xtrain_proba, y_pred_proba))
-            data_Xtest_proba = np.hstack((data_Xtest_proba, y_pred1_proba))
-        data_Xtrain_proba = np.hstack((data_Xtrain_proba, data_ytrain_proba.reshape(-1, 1), data_ypred_proba.reshape(-1, 1)))
-        data_Xtest_proba = np.hstack((data_Xtest_proba, data_ytest_proba.reshape(-1, 1), data_ypred1_proba.reshape(-1, 1)))
-
-        # Check if it is a binary classification problem
-        if check_class_count == 2:
-            # --- Training Data
-            train_fp_proba = data_Xtrain_proba[(data_Xtrain_proba[:, -4] >= probability_threshold) & (data_Xtrain_proba[:, -4] <= (1 - probability_threshold))]
-
-            # --- Test Data
-            test_fp_proba = data_Xtest_proba[(data_Xtest_proba[:, -4] >= probability_threshold) & (data_Xtest_proba[:, -4] <= (1 - probability_threshold))]
-
-            # Store the data
-            store_data_proba["ReTraining Data"] = train_fp_proba
-            store_data_proba["ReTesting Data"] = test_fp_proba
-            store_data_proba["X_train"] = data_Xtrain_proba
-
-        # Check if it is a multi-classification problem
-        # ---> NEEDS TO BE TESTED
-        elif check_class_count > 2:
-            get_unique = np.unique(data_ytrain_proba)
-            for value in get_unique:
-                for each_value in get_unique:
-                    if value != each_value:
-                        # --- Training Data
-                        train_fp_proba = data_Xtrain_proba[(data_Xtrain_proba[:, -(len(get_unique) + 2):-2] <= probability_threshold)]
-
-                        # --- Test Data
-                        test_fp_proba = data_Xtest_proba[(data_Xtest_proba[:, -(len(get_unique) + 2):-2] <= probability_threshold)]
-
-                        # Store the data
-                        store_data_proba[f"Class {value} | Class {each_value}"] = {"Training Data": train_fp_proba, "Test Data": test_fp_proba}
+    # Validation Evaluations: Check Model Predictive Capacity
+    val_analysis = confusion_matrix(y_val, y_pred2)
+    val_class_report = classification_report(y_val, y_pred2)
+    val_accuracy = accuracy_score(y_val, y_pred2)
+    val_precision = precision_score(y_val, y_pred2, average='weighted')
+    val_recall = recall_score(y_val, y_pred2, average='weighted')
+    val_f1_score = f1_score(y_val, y_pred2, average='weighted')
+    val_tpr = val_analysis[1, 1] / np.sum(val_analysis[1, :])
+    val_tnr = val_analysis[0, 0] / np.sum(val_analysis[0, :])
+    val_precision_1 = val_analysis[1, 1] / np.sum(val_analysis[:, 1])
+    val_precision_0 = val_analysis[0, 0] / np.sum(val_analysis[:, 0])
 
     # Validation of Predictions
-    if (cross_validate_Xtrain is None) and (cross_validate_ytrain is None):
-        cross_val = cross_val_score(model,
-                                    X_train,
-                                    y_train,
-                                    cv = kfold,
-                                    scoring = scoring_cross_val_score,
-                                    n_jobs = n_jobs)
-        cross_validation = cross_validate(model,
-                                          X_train,
-                                          y_train,
-                                          cv = kfold,
-                                          return_estimator = return_estimator,
-                                          return_train_score = return_train_score,
-                                          scoring = scoring_cross_validate,
-                                          n_jobs = n_jobs)
-        score_mean = round((cross_val.mean() * 100), 2)
-        score_std_dev = round((cross_val.std() * 100), 2)
-        return {
-            "Model": model,
-            "Predictions": {"Actual Training Y": y_train,
-                            "Actual Test Y": y_test,
-                            "Predicted Training Y": y_pred,
-                            "Predicted Test Y": y_pred1,
-                            "Probabilities Training Y": y_pred_proba if hasattr(classifier, "predict_proba") == True else None,
-                            "Probablilities Test Y": y_pred1_proba if hasattr(classifier, "predict_proba") == True else None,
-                            },
-            "Training Evaluation": {
-                "Confusion Matrix": training_analysis,
-                "Classification Report": training_class_report,
-                "Model Accuracy": training_accuracy,
-                "Model Precision": training_precision,
-                "Model Recall": training_recall,
-                "Model F1 Score": training_f1_score,
-                },
-            "Test Evaluation": {
-                "Confusion Matrix": test_analysis,
-                "Classification Report": test_class_report,
-                "Model Accuracy": test_accuracy,
-                "Model Precision": test_precision,
-                "Model Recall": test_recall,
-                "Model F1 Score": test_f1_score,
-                },
-            "Cross Validation": {
-                "Cross Val Scores": cross_val,
-                "Cross Validation Mean": score_mean,
-                "Cross Validation Standard Deviation": score_std_dev,
-                "Validation Models": cross_validation
-                },
-            "False Positives and False Negatives": store_data if fp_and_fn == True else None,
-            "Probabilities": store_data_proba if probabilities == True else None
-            }
+    kfold = RepeatedStratifiedKFold(n_splits = repeatedstratifiedkfold, random_state = cv_random_state, n_repeats = n_repeats_stratified)
+    cross_val_analysis = {}
+    count = 0
 
-    else:
-        # Here, what we hope to achieve is the built model in cases of creating synthetic data
-        # to be tested on the specified x_train and y_train which is most likely the data before
-        # we fixed class imbablance.
-        cross_val = cross_val_score(model,
-                                    cross_validate_Xtrain,
-                                    cross_validate_ytrain,
-                                    cv = kfold,
-                                    scoring = scoring_cross_val_score,
-                                    n_jobs = n_jobs)
-        cross_validation = cross_validate(model,
-                                          cross_validate_Xtrain,
-                                          cross_validate_ytrain,
-                                          cv = kfold,
-                                          return_estimator = return_estimator,
-                                          return_train_score = return_train_score,
-                                          scoring = scoring_cross_validate,
-                                          n_jobs = n_jobs)
-        score_mean = round((cross_val.mean() * 100), 2)
-        score_std_dev = round((cross_val.std() * 100), 2)
-        return {
-            "Model": model,
-            "Predictions": {"Actual Training Y": y_train,
-                            "Actual Test Y": y_test,
-                            "Predicted Training Y": y_pred,
-                            "Predicted Test Y": y_pred1,
-                            "Probabilities Training Y": y_pred_proba if hasattr(classifier, "predict_proba") == True else None,
-                            "Probablilities Test Y": y_pred1_proba if hasattr(classifier, "predict_proba") == True else None,
-                            },
-            "Training Evaluation": {
-                "Confusion Matrix": training_analysis,
-                "Classification Report": training_class_report,
-                "Model Accuracy": training_accuracy,
-                "Model Precision": training_precision,
-                "Model Recall": training_recall,
-                "Model F1 Score": training_f1_score,
-                },
-            "Test Evaluation": {
-                "Confusion Matrix": test_analysis,
-                "Classification Report": test_class_report,
-                "Model Accuracy": test_accuracy,
-                "Model Precision": test_precision,
-                "Model Recall": test_recall,
-                "Model F1 Score": test_f1_score,
-                },
-            "Cross Validation": {
-                "Cross Val Scores": cross_val,
-                "Cross Validation Mean": score_mean,
-                "Cross Validation Standard Deviation": score_std_dev,
-                "Validation Models": cross_validation
-                },
-            "False Positives and False Negatives": store_data if fp_and_fn == True else None,
-            "Probabilities": store_data_proba if probabilities == True else None
-            }
+    # Convert pandas series to numpy array
+    if isinstance(cross_validate_ytrain, pd.Series):
+        cross_validate_ytrain = cross_validate_ytrain.reset_index(drop = True)
+    if isinstance(cross_validate_Xtrain, pd.DataFrame):
+        cross_validate_Xtrain = np.array(cross_validate_Xtrain)
 
-def build_multiple_classifiers(classifiers: Union[list or tuple],
-                               x_train: pd.DataFrame,
-                               y_train: pd.DataFrame,
-                               x_test: pd.DataFrame,
-                               y_test: pd.DataFrame,
-                               kfold: int = 10,
-                               pos_label: int = 1,
-                               scoring_cross_val_score: str or callable = None,
-                               n_jobs: int = 1,
-                               return_estimator: bool = True,
-                               return_train_score: bool = True,
-                               fp_and_fn: bool = False) -> tuple:
+    # Enumerate splits
+    for train_ix, test_ix in kfold.split(cross_validate_Xtrain, cross_validate_ytrain):
+        # get data
+        train_X, test_X = cross_validate_Xtrain[train_ix], cross_validate_Xtrain[test_ix]
+        train_y, test_y = cross_validate_ytrain[train_ix], cross_validate_ytrain[test_ix]
+
+        # Resampling minority class
+        # ---> Resampling the training data seperately
+        try:
+            resampler_train = repeatedstratifiedresampler
+            X_resampled, y_resampled = resampler_train.fit_resample(train_X, train_y)
+        except:
+            X_resampled, y_resampled = train_X, train_y
+
+        # Value counts for the target
+        count_target_resampled_train = y_resampled.value_counts()
+
+        # Fit the model
+        val_model = classifier.fit(X_resampled, y_resampled)
+
+        # Make predictions
+        val_model_predictions = val_model.predict(X_test)
+        model_predictions = val_model.predict(test_X)
+        predictions = val_model.predict(X_val)
+
+
+        # Test Evaluations: Check Model Predictive Capacity
+        model_analysis = confusion_matrix(y_test, val_model_predictions)
+        model_class_report = classification_report(y_test, val_model_predictions)
+        model_accuracy = accuracy_score(y_test, val_model_predictions)
+        model_precision = precision_score(y_test, val_model_predictions, average='weighted')
+        model_recall = recall_score(y_test, val_model_predictions, average='weighted')
+        model_f1_score = f1_score(y_test, val_model_predictions, average='weighted')
+        model_tpr = model_analysis[1, 1] / np.sum(model_analysis[1, :])
+        model_tnr = model_analysis[0, 0] / np.sum(model_analysis[0, :])
+        model_precision_1 = model_analysis[1, 1] / np.sum(model_analysis[:, 1])
+        model_precision_0 = model_analysis[0, 0] / np.sum(model_analysis[:, 0])
+
+        # Test evaluation for each fold
+        kfold_model_analysis = confusion_matrix(test_y, model_predictions)
+        kfold_model_class_report = classification_report(test_y, model_predictions)
+
+        # Validation data evaluation for each fold
+        val_model_analysis = confusion_matrix(y_val, predictions)
+        val_model_class_report = classification_report(y_val, predictions)
+
+        cross_val_analysis[count] = {}
+        cross_val_analysis[count]["model"] = val_model
+        cross_val_analysis[count]["y_train"] = y_resampled
+        cross_val_analysis[count]["X_train"] = X_resampled
+        cross_val_analysis[count]["y_test"] = test_y
+        cross_val_analysis[count]["y_pred"] = val_model_predictions
+        cross_val_analysis[count]["count_target_categories"] = count_target_resampled_train
+        cross_val_analysis[count]["confusion_matrix"] = model_analysis
+        cross_val_analysis[count]["confusion_matrix_kfold"] = kfold_model_analysis
+        cross_val_analysis[count]["confusion_matrix_val_data"] = val_model_analysis
+        cross_val_analysis[count]["classification_report"] = model_class_report
+        cross_val_analysis[count]["classification_report_kfold"] = kfold_model_class_report
+        cross_val_analysis[count]["classification_report_val_data"] = val_model_class_report
+        cross_val_analysis[count]["accuracy"] = model_accuracy
+        cross_val_analysis[count]["precision"] = model_precision
+        cross_val_analysis[count]["recall"] = model_recall
+        cross_val_analysis[count]["f1_score"] = model_f1_score
+        cross_val_analysis[count]["true_positive_rate"] = model_tpr
+        cross_val_analysis[count]["true_negative_rate"] = model_tnr
+        cross_val_analysis[count]["false_positive_rate"] = model_precision_1
+        cross_val_analysis[count]["false_negative_rate"] = model_precision_0
+
+        # Increment the value of count
+        count += 1
+
+    cross_val = cross_val_score(model,
+                                cross_validate_Xtrain,
+                                cross_validate_ytrain,
+                                cv = kfold,
+                                scoring = scoring_cross_val_score,
+                                n_jobs = n_jobs)
+    cross_validation = cross_validate(model,
+                                      cross_validate_Xtrain,
+                                      cross_validate_ytrain,
+                                      cv = kfold,
+                                      return_estimator = return_estimator,
+                                      return_train_score = return_train_score,
+                                      scoring = scoring_cross_validate,
+                                      n_jobs = n_jobs)
+
+    score_mean = round((cross_val.mean() * 100), 2)
+    score_std_dev = round((cross_val.std() * 100), 2)
+    return {
+        "Model": model,
+        "Predictions": {"Actual Training Y": y_train,
+                        "Actual Test Y": y_test,
+                        "Predicted Training Y": y_pred,
+                        "Predicted Test Y": y_pred1,
+                        "Probabilities Training Y": y_pred_proba if hasattr(classifier, "predict_proba") == True else None,
+                        "Probablilities Test Y": y_pred1_proba if hasattr(classifier, "predict_proba") == True else None,
+                        "Probablilities Validation Y": y_pred2_proba if hasattr(classifier, "predict_proba") == True else None,
+                        },
+        "Training Evaluation": {
+            "Confusion Matrix": training_analysis,
+            "Classification Report": training_class_report,
+            "Model Accuracy": training_accuracy,
+            "Model Precision": training_precision,
+            "Model Recall": training_recall,
+            "Model F1 Score": training_f1_score,
+            "Model True Positive Rate": training_tpr,
+            "Model True Negative Rate": training_tnr,
+            "Model Precision (C_1)": training_precision_1,
+            "Model Precision (C_0)": training_precision_0,
+            },
+        "Test Evaluation": {
+            "Confusion Matrix": test_analysis,
+            "Classification Report": test_class_report,
+            "Model Accuracy": test_accuracy,
+            "Model Precision": test_precision,
+            "Model Recall": test_recall,
+            "Model F1 Score": test_f1_score,
+            "Model True Positive Rate": test_tpr,
+            "Model True Negative Rate": test_tnr,
+            "Model Precision (C_1)": test_precision_1,
+            "Model Precision (C_0)": test_precision_0,
+            },
+        "Validation Data Evaluation": {
+            "Confusion Matrix": val_analysis,
+            "Classification Report": val_class_report,
+            "Model Accuracy": val_accuracy,
+            "Model Precision": val_precision,
+            "Model Recall": val_recall,
+            "Model F1 Score": val_f1_score,
+            "Model True Positive Rate": val_tpr,
+            "Model True Negative Rate": val_tnr,
+            "Model Precision (C_1)": val_precision_1,
+            "Model Precision (C_0)": val_precision_0,
+            },
+        "Cross Validation": {
+            "Cross Val Scores": cross_val,
+            "Cross Validation Mean": score_mean,
+            "Cross Validation Standard Deviation": score_std_dev,
+            "Validation Models": cross_validation,
+            "Validation Predictions": cross_val_analysis
+            },
+        }
+
+def build_multiple_classifiers(classifiers: Union[List, Tuple],
+                                X_train: pd.DataFrame,
+                                y_train: pd.DataFrame,
+                                X_test: pd.DataFrame,
+                                y_test: pd.DataFrame,
+                                X_val: pd.DataFrame,
+                                y_val: pd.DataFrame,
+                                cross_validate_Xtrain: Optional[pd.DataFrame] = None,
+                                cross_validate_ytrain: Optional[pd.DataFrame] = None,
+                                repeatedstratifiedkfold: int = 10,
+                                repeatedstratifiedresampler: Optional[BaseSampler] = None,
+                                n_repeats_stratified: int = 1,
+                                scoring_cross_val_score: Union[str, Callable] = None,
+                                n_jobs: int = -1,
+                                return_estimator: bool = True,
+                                return_train_score: bool = True,
+                                sample_weights: Optional[Dict] = None,
+                                figsize: tuple = (20, 10),
+                                cv_random_state: int = None) -> Tuple:
 
     multiple_classifier_models = {} # General store for all metrics from each algorithm
     store_algorithm_metrics = [] # Store all metrics gotten from the algorithm at each iteration in the loop below
@@ -853,26 +799,48 @@ def build_multiple_classifiers(classifiers: Union[list or tuple],
         # Call the function build_classifier_model to get classifier metrics
         print(f"Building classifier model and metrics for {algorithms.__class__.__name__} model.")
         multiple_classifier_models[f"{algorithms.__class__.__name__}"] = build_classifier_model(classifier = algorithms,
-                                                                                                x_train = x_train,
+                                                                                                X_train = X_train,
                                                                                                 y_train = y_train,
-                                                                                                x_test = x_test,
+                                                                                                X_test = X_test,
                                                                                                 y_test = y_test,
-                                                                                                kfold = kfold,
-                                                                                                pos_label = pos_label,
+                                                                                                X_val = X_val,
+                                                                                                y_val = y_val,
+                                                                                                repeatedstratifiedkfold = repeatedstratifiedkfold,
+                                                                                                repeatedstratifiedresampler = repeatedstratifiedresampler,
+                                                                                                n_repeats_stratified = n_repeats_stratified,
                                                                                                 scoring_cross_val_score = scoring_cross_val_score,
                                                                                                 n_jobs = n_jobs,
                                                                                                 return_estimator = return_estimator,
                                                                                                 return_train_score = return_train_score,
-                                                                                                fp_and_fn = fp_and_fn)
+                                                                                                cross_validate_Xtrain = cross_validate_Xtrain,
+                                                                                                cross_validate_ytrain = cross_validate_ytrain,
+                                                                                                sample_weights = sample_weights,
+                                                                                                cv_random_state = cv_random_state)
         # Collecting individual metric to build algorithm dataframe
         training_accuracy = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Training Evaluation"]["Model Accuracy"]
         training_precision = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Training Evaluation"]["Model Precision"]
         training_recall = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Training Evaluation"]["Model Recall"]
         training_f1_score = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Training Evaluation"]["Model F1 Score"]
+        training_tpr = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Training Evaluation"]["Model True Positive Rate"]
+        training_tnr = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Training Evaluation"]["Model True Negative Rate"]
+        training_precision_1 = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Training Evaluation"]["Model Precision (C_1)"]
+        training_precision_0 = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Training Evaluation"]["Model Precision (C_0)"]
         test_accuracy = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Test Evaluation"]["Model Accuracy"]
         test_precision = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Test Evaluation"]["Model Precision"]
         test_recall = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Test Evaluation"]["Model Recall"]
         test_f1_score = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Test Evaluation"]["Model F1 Score"]
+        test_tpr = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Test Evaluation"]["Model True Positive Rate"]
+        test_tnr = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Test Evaluation"]["Model True Negative Rate"]
+        test_precision_1 = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Test Evaluation"]["Model Precision (C_1)"]
+        test_precision_0 = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Test Evaluation"]["Model Precision (C_0)"]
+        val_accuracy = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Validation Data Evaluation"]["Model Accuracy"]
+        val_precision = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Validation Data Evaluation"]["Model Precision"]
+        val_recall = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Validation Data Evaluation"]["Model Recall"]
+        val_f1_score = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Validation Data Evaluation"]["Model F1 Score"]
+        val_tpr = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Validation Data Evaluation"]["Model True Positive Rate"]
+        val_tnr = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Validation Data Evaluation"]["Model True Negative Rate"]
+        val_precision_1 = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Validation Data Evaluation"]["Model Precision (C_1)"]
+        val_precision_0 = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Validation Data Evaluation"]["Model Precision (C_0)"]
         cross_val_mean = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Cross Validation"]["Cross Validation Mean"]
         cross_val_std = multiple_classifier_models[f"{algorithms.__class__.__name__}"]["Cross Validation"]["Cross Validation Standard Deviation"]
 
@@ -888,10 +856,26 @@ def build_multiple_classifiers(classifiers: Union[list or tuple],
                                         training_precision,
                                         training_recall,
                                         training_f1_score,
+                                        training_tpr,
+                                        training_tnr,
+                                        training_precision_1,
+                                        training_precision_0,
                                         test_accuracy,
                                         test_precision,
                                         test_recall,
                                         test_f1_score,
+                                        test_tpr,
+                                        test_tnr,
+                                        test_precision_1,
+                                        test_precision_0,
+                                        val_accuracy,
+                                        val_precision,
+                                        val_recall,
+                                        val_f1_score,
+                                        val_tpr,
+                                        val_tnr,
+                                        val_precision_1,
+                                        val_precision_0,
                                         cross_val_mean,
                                         cross_val_std])
         # Storing all individual cross validation metrics from each iteration
@@ -911,12 +895,41 @@ def build_multiple_classifiers(classifiers: Union[list or tuple],
                                                           "Training Precision",
                                                           "Training Recall",
                                                           "Training F1-Score",
+                                                          "Training True Positive Rate",
+                                                          "Training True Negative Rate",
+                                                          "Training Precision (C_1)",
+                                                          "Training Precision (C_0)",
                                                           "Test Accuracy",
                                                           "Test Precision",
                                                           "Test Recall",
                                                           "Test F1-Score",
+                                                          "Test True Positive Rate",
+                                                          "Test True Negative Rate",
+                                                          "Test Precision (C_1)",
+                                                          "Test Precision (C_0)",
+                                                          "Validation Data Accuracy",
+                                                          "Validation Data Precision",
+                                                          "Validation Data Recall",
+                                                          "Validation Data F1-Score",
+                                                          "Validation Data True Positive Rate",
+                                                          "Validation Data True Negative Rate",
+                                                          "Validation Data Precision (C_1)",
+                                                          "Validation Data Precision (C_0)",
                                                           "CV Mean",
                                                           "CV Standard Deviation"])
+    for each_col in df.columns:
+        if each_col != "Algorithm":
+            df = df.sort_values(each_col, ascending = False)
+            cm = plt.cm.Purples_r(np.linspace(0.2, 1, df.shape[1]))
+            plt.figure(figsize = figsize)
+            bar_chart = plt.bar(x = df.Algorithm, height = each_col, color = cm, data = df)
+            plt.bar_label(container = bar_chart, labels = round(df[each_col], 2))
+            plt.title(f"Analyzing Results of {each_col} for each Algorithm")
+            plt.xlabel("Algorithms")
+            plt.ylabel(f"{each_col}")
+            plt.tight_layout()
+            plt.show()
+
     # Save datasets in folder for analysis
     save_dataframe(dataset = dataframe, name = "Cross_Validation_Evaluation")
     save_dataframe(dataset = df, name = "Algorithm_Evaluation")
@@ -958,152 +971,29 @@ def save_dataframe(dataset: pd.DataFrame, name: str):
         print("\nFailed to save file to the specified folder ---> generated_data folder.")
 
 
-def create_group_clustering(dataset: pd.DataFrame,
-                            columns: list,
-                            n_clusters: int,
-                            linkage: str):
-
-    clusterer = AgglomerativeClustering(linkage = linkage, n_clusters = n_clusters)
-    return clusterer.fit(dataset[columns]).labels_
-
-
-def agg_two_groups(df: pd.DataFrame,
-                  columns: list,
-                  groupby: str,
-                  agg_fun: dict):
-
-    dataset = df[columns].groupby(groupby).agg(agg_fun).reset_index()
-    mapping = {key: value for key, value in zip(dataset[columns[0]], dataset[columns[1]])}
-    return mapping
-
 def data_preprocessing_pipeline(dataset: pd.DataFrame,
                                 drop_columns: list = None,
-                                log_col: list = None):
-
+                                log_col: list = None,
+                                dummy_col: list = None,
+                                replace_val: dict = None):
     # Data Cleaning and Transformation
-    dataset = pd.get_dummies(dataset,
-                             columns = ["Geography", "Gender"],
-                             drop_first=True,
-                             dtype=np.int64)
+    if dummy_col is not None:
+        dataset = pd.get_dummies(dataset,
+                                 columns = dummy_col,
+                                 drop_first=True,
+                                 dtype=np.int64)
 
     # Converting the card type to numeric
-    card_hierarchy = {"SILVER": 0, "GOLD": 1, "PLATINUM": 2, "DIAMOND": 3}
-    dataset = dataset.replace(card_hierarchy)
-
-    # Dropping the complain column
-    dataset = dataset.drop("Complain", axis=1)
+    if replace_val is not None:
+        dataset = dataset.replace(replace_val)
 
     # Creating logrithmic columns
     if log_col is not None:
         for each_col in log_col:
-            dataset[each_col] = np.log10(dataset[each_col])
+            dataset[f"Log_{each_col}"] = np.log1p(dataset[each_col])
 
     # Dropping columns
     if drop_columns is not None:
         dataset = dataset.drop(drop_columns, axis = 1)
 
     return dataset
-
-
-def classifier(train_classifier,
-               retrain_classifier,
-                X_train: pd.DataFrame,
-                y_train: pd.DataFrame,
-                X_test: pd.DataFrame,
-                y_test: pd.DataFrame,
-                cross_validate_Xtrain: pd.DataFrame = None,
-                cross_validate_ytrain: pd.DataFrame = None,
-                kfold: int = 10,
-                pos_label: int = 1,
-                scoring_cross_validate: str or callable or list or tuple or dict = None,
-                scoring_cross_val_score: str or callable = None,
-                n_jobs: int = 1,
-                return_estimator: bool = True,
-                return_train_score: bool = True,
-                fp_and_fn: bool = False,
-                sample_weights: dict = None,
-                probabilities: bool = False,
-                probability_threshold: float = 0.3,
-                retrain_prob_thresh: float = 0.3) -> dict:
-
-    y_pred = []
-    train = build_classifier_model(classifier = train_classifier,
-                                    X_train = X_train,
-                                    y_train = y_train,
-                                    X_test = X_test,
-                                    y_test = y_test,
-                                    cross_validate_Xtrain = cross_validate_Xtrain,
-                                    cross_validate_ytrain = cross_validate_ytrain,
-                                    kfold = kfold,
-                                    pos_label = pos_label,
-                                    scoring_cross_validate = scoring_cross_validate,
-                                    scoring_cross_val_score = scoring_cross_val_score,
-                                    n_jobs = n_jobs,
-                                    return_estimator = return_estimator,
-                                    return_train_score = return_train_score,
-                                    fp_and_fn = fp_and_fn,
-                                    sample_weights = sample_weights,
-                                    probabilities = probabilities,
-                                    probability_threshold = probability_threshold)
-    train_model = train["Model"]
-
-
-    retrain = build_classifier_model(classifier = retrain_classifier,
-                                    X_train = X_train,
-                                    y_train = y_train,
-                                    X_test = X_test,
-                                    y_test = y_test,
-                                    cross_validate_Xtrain = cross_validate_Xtrain,
-                                    cross_validate_ytrain = cross_validate_ytrain,
-                                    kfold = kfold,
-                                    pos_label = pos_label,
-                                    scoring_cross_validate = scoring_cross_validate,
-                                    scoring_cross_val_score = scoring_cross_val_score,
-                                    n_jobs = n_jobs,
-                                    return_estimator = return_estimator,
-                                    return_train_score = return_train_score,
-                                    fp_and_fn = fp_and_fn,
-                                    sample_weights = sample_weights,
-                                    probabilities = probabilities,
-                                    probability_threshold = probability_threshold)
-    retrain_model = retrain["Model"]
-
-    # Store models predictions
-    if hasattr(train_classifier, "predict_proba"):
-        if isinstance(X_test, pd.DataFrame):
-            X_test = X_test.values
-        for each_row in X_test:
-            prediction = train_model.predict_proba([each_row])
-            print(prediction)
-            if (prediction[0][0] >= retrain_prob_thresh) & (prediction[0][0] <= (1 - retrain_prob_thresh)):
-                y_pred.append(retrain_model.predict([each_row]))
-            else:
-                y_pred.append(train_model.predict([each_row]))
-
-    y_pred = np.array(y_pred)
-
-    # Model Evalustion and Validation
-    training_analysis = confusion_matrix(y_test, y_pred)
-    training_class_report = classification_report(y_test, y_pred)
-    training_accuracy = accuracy_score(y_test, y_pred)
-    training_precision = precision_score(y_test, y_pred, average='weighted', pos_label = pos_label)
-    training_recall = recall_score(y_test, y_pred, average='weighted', pos_label = pos_label)
-    training_f1_score = f1_score(y_test, y_pred, average='weighted', pos_label = pos_label)
-
-    # Output
-    return {
-        "Model": [train_model, retrain_model],
-        f"{train_model.__class__.__name__} Results": train,
-        f"{retrain_model.__class__.__name__} Results": retrain,
-        "Predictions": {"Actual Y": y_test,
-                        "Predicted Y": y_pred,
-                        },
-        "Training Evaluation": {
-            "Confusion Matrix": training_analysis,
-            "Classification Report": training_class_report,
-            "Model Accuracy": training_accuracy,
-            "Model Precision": training_precision,
-            "Model Recall": training_recall,
-            "Model F1 Score": training_f1_score,
-            }
-        }
